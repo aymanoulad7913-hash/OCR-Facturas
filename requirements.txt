@@ -1,8 +1,0 @@
-# Python deps for Streamlit Cloud
-streamlit
-pandas
-pymupdf
-pillow
-pytesseract
-openpyxl
-rapidfuzz
