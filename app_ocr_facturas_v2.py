@@ -59,9 +59,12 @@ if uploaded_file:
     if not df.empty:
         st.success(f"✅ Encontrados {len(df)} consumos")
         st.dataframe(df, use_container_width=True)
+        buffer = BytesIO()
+        df.to_excel(buffer, index=False)
+        buffer.seek(0)
         st.download_button(
             "⬇️ Descargar Excel",
-            data=df.to_excel(index=False),
+            data=buffer.getvalue(),
             file_name="consumos.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )

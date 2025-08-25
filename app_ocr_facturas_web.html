@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚡ WattsOn — OCR de Facturas (Web)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/pdfjs-dist@3.4.120/build/pdf.min.js"></script>
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js'></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .table-container {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        #drop-zone {
+            border: 2px dashed #cbd5e1;
+            transition: background-color 0.2s, border-color 0.2s;
+        }
+        #drop-zone.dragover {
+            background-color: #f0f9ff;
+            border-color: #3b82f6;
+        }
+        .loader {
+            border-top-color: #3498db;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+
+    <div class="container mx-auto p-4 md:p-8 max-w-7xl">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-900">⚡ WattsOn — OCR de Facturas</h1>
+            <p class="text-gray-500 mt-2">Sube tus facturas en PDF para extraer los consumos P1-P6 de forma automática.</p>
+        </header>
+
+        <main class="bg-white p-6 rounded-2xl shadow-lg border border-gray-200">
+            <!-- Zona de Carga de Archivos -->
+            <div id="drop-zone" class="p-8 text-center rounded-lg cursor-pointer mb-6">
+                <input type="file" id="file-input" multiple accept=".pdf" class="hidden">
+                <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                    <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <p class="mt-4 text-sm text-gray-600">
+                    <span class="font-semibold text-blue-600">Haz clic para subir</span> o arrastra y suelta tus archivos PDF aquí.
+                </p>
+                <p class="text-xs text-gray-500 mt-1">Solo se aceptan archivos PDF</p>
+            </div>
+            <div id="file-list" class="mb-6 space-y-2"></div>
+
+            <!-- Controles de OCR -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+                <div>
+                    <label for="dpi" class="block text-sm font-medium text-gray-700 mb-1">DPI (para escaneos)</label>
+                    <input id="dpi" type="range" min="150" max="600" value="300" step="50" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                    <div class="text-center text-sm text-gray-500 mt-1"><span id="dpi-value">300</span> DPI</div>
+                </div>
+                <div>
+                    <label for="langs" class="block text-sm font-medium text-gray-700 mb-1">Idiomas Tesseract</label>
+                    <input type="text" id="langs" value="spa+eng" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                </div>
+                <div>
+                    <label for="psm" class="block text-sm font-medium text-gray-700 mb-1">Modo de segmentación (PSM)</label>
+                    <select id="psm" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                        <option value="6">6 - Líneas de texto</option>
+                        <option value="4">4 - Bloques de texto</option>
+                        <option value="11">11 - Denso/Uniforme</option>
+                        <option value="3">3 - Automático</option>
+                    </select>
+                </div>
+            </div>
+            <div class="flex items-start space-x-6 mb-6">
+                <div class="flex items-center">
+                    <input id="dedup-doc" type="checkbox" checked class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
+                    <label for="dedup-doc" class="ml-2 block text-sm text-gray-900">No registrar duplicados idénticos</label>
+                </div>
+                 <div class="flex items-center">
+                    <input id="ocr-intensivo" type="checkbox" class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
+                    <label for="ocr-intensivo" class="ml-2 block text-sm text-gray-900">OCR intensivo (más lento)</label>
+                </div>
+            </div>
+
+            <!-- Botón de Procesamiento y Progreso -->
+            <div class="text-center">
+                <button id="process-btn" class="bg-blue-600 text-white font-bold py-3 px-8 rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition duration-150 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed">
+                    Procesar Archivos
+                </button>
+            </div>
+            <div id="progress-container" class="mt-6 hidden">
+                <div class="w-full bg-gray-200 rounded-full h-2.5">
+                    <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+                </div>
+                <p id="progress-text" class="text-center text-sm text-gray-600 mt-2"></p>
+            </div>
+        </main>
+
+        <!-- Resultados -->
+        <div id="results-container" class="mt-8 hidden">
+            <div id="message-box" class="mb-6"></div>
+            
+            <!-- Resumen -->
+            <div id="summary-section" class="mb-8 hidden">
+                <h2 class="text-2xl font-bold mb-4">Resumen por Página</h2>
+                <div class="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
+                    <div class="table-container">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Archivo</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Página</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Comercializadora</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CUPS</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha Inicio</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha Fin</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P1</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P2</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P3</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P4</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P5</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P6</th>
+                                </tr>
+                            </thead>
+                            <tbody id="summary-table-body" class="bg-white divide-y divide-gray-200"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Detalle -->
+            <div id="detail-section" class="mb-8 hidden">
+                <h2 class="text-2xl font-bold mb-4">Detalle por Página</h2>
+                 <div class="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
+                    <div class="table-container">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Archivo</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Página</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Periodo</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Consumo kWh</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha Inicio</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha Fin</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Comercializadora</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CUPS</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fuente OCR</th>
+                                </tr>
+                            </thead>
+                            <tbody id="detail-table-body" class="bg-white divide-y divide-gray-200"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Páginas sin datos -->
+            <div id="missing-section" class="mb-8 hidden">
+                 <h2 class="text-2xl font-bold mb-4 text-amber-600">⚠️ Páginas sin P1..P6 Detectados</h2>
+                 <div class="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
+                    <div class="table-container">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Archivo</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Página</th>
+                                </tr>
+                            </thead>
+                            <tbody id="missing-table-body" class="bg-white divide-y divide-gray-200"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Botones de descarga -->
+            <div id="download-buttons" class="text-center space-x-0 space-y-2 md:space-y-0 md:space-x-4 hidden">
+                <button id="download-excel" class="bg-green-600 text-white font-bold py-2 px-4 rounded-lg shadow-md hover:bg-green-700 transition duration-150">⬇️ Descargar Excel</button>
+                <button id="download-csv-detail" class="bg-gray-600 text-white font-bold py-2 px-4 rounded-lg shadow-md hover:bg-gray-700 transition duration-150">⬇️ Descargar CSV Detalle</button>
+                <button id="download-csv-summary" class="bg-gray-600 text-white font-bold py-2 px-4 rounded-lg shadow-md hover:bg-gray-700 transition duration-150">⬇️ Descargar CSV Resumen</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // --- CONFIGURACIÓN E INICIALIZACIÓN ---
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@3.4.120/build/pdf.worker.min.js`;
+
+        // --- REFERENCIAS A ELEMENTOS DEL DOM ---
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const fileListDiv = document.getElementById('file-list');
+        const dpiSlider = document.getElementById('dpi');
+        const dpiValue = document.getElementById('dpi-value');
+        const processBtn = document.getElementById('process-btn');
+        const progressContainer = document.getElementById('progress-container');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const resultsContainer = document.getElementById('results-container');
+        const messageBox = document.getElementById('message-box');
+        const detailSection = document.getElementById('detail-section');
+        const summarySection = document.getElementById('summary-section');
+        const missingSection = document.getElementById('missing-section');
+        const detailTableBody = document.getElementById('detail-table-body');
+        const summaryTableBody = document.getElementById('summary-table-body');
+        const missingTableBody = document.getElementById('missing-table-body');
+        const downloadButtons = document.getElementById('download-buttons');
+        const downloadExcelBtn = document.getElementById('download-excel');
+        const downloadCsvDetailBtn = document.getElementById('download-csv-detail');
+        const downloadCsvSummaryBtn = document.getElementById('download-csv-summary');
+
+        let uploadedFiles = [];
+        let detailData = [];
+        let summaryData = [];
+
+        // --- MANEJADORES DE EVENTOS UI ---
+        dpiSlider.addEventListener('input', (e) => {
+            dpiValue.textContent = e.target.value;
+        });
+
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+        });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            handleFiles(files);
+        });
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+        
+        processBtn.addEventListener('click', processFiles);
+
+        // --- LÓGICA DE MANEJO DE ARCHIVOS ---
+        function handleFiles(files) {
+            uploadedFiles = Array.from(files);
+            renderFileList();
+        }
+
+        function renderFileList() {
+            fileListDiv.innerHTML = '';
+            if (uploadedFiles.length > 0) {
+                const list = document.createElement('ul');
+                list.className = 'list-disc list-inside bg-gray-100 p-4 rounded-md';
+                uploadedFiles.forEach(file => {
+                    const li = document.createElement('li');
+                    li.className = 'text-sm text-gray-700';
+                    li.textContent = `${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+                    list.appendChild(li);
+                });
+                fileListDiv.appendChild(list);
+            }
+        }
+
+        // --- PORTADO DE PYTHON A JAVASCRIPT ---
+        // La siguiente sección contiene la lógica de extracción de datos,
+        // portada directamente del script de Python original.
+
+        // --- Utilidades ---
+        function stripAccents(s) {
+            s = s.replace(/’|‘|´/g, "'");
+            return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        }
+
+        function normnum(s) {
+            if (s === null || s === undefined) return null;
+            s = String(s).trim().replace(/\s+/g, '');
+            if (!s) return null;
+
+            if (s.includes(',') && s.includes('.')) {
+                if (s.indexOf('.') < s.indexOf(',')) {
+                    s = s.replace(/\./g, '').replace(',', '.');
+                } else {
+                     s = s.replace(/,/g, '');
+                }
+            } else if (s.includes(',')) {
+                s = s.replace(',', '.');
+            } else if (s.includes('.') && /^\d{1,3}(\.\d{3})+$/.test(s)) {
+                s = s.replace(/\./g, '');
+            }
+            
+            const num = parseFloat(s);
+            return isNaN(num) ? null : num;
+        }
+
+        function _fix_ocr_confusions(t) {
+            // normaliza guiones unicode a -
+            let out = t.replace(/[\u2010-\u2014\u2212]/g, "-");
+            const repl = [
+                [/k\s*[\|Il1!]\s*h/gi, 'kWh'],      // k|h / k l h / k1h
+                [/k\s*[vV]{2}\s*h/gi, 'kWh'],      // kVVh
+                [/k\s*w\s*h/gi, 'kWh'],          // k w h
+                [/kw\s*h/gi, 'kWh'],            // kw h
+                [/k\s*m\s*h/gi, 'kWh'],          // kmh -> kWh (errores)
+                [/\bKWH\b/g, 'kWh'],
+                [/P\s*[|Il!]\b/gi, 'P1'],
+                [/P\s*Í\b/gi, 'P1'],
+                [/P\s*Z\b/gi, 'P2'],
+                [/(\d)\s+([.,])\s*(\d)/g, '$1$2$3'],
+            ];
+            for (const [pat, rep] of repl) {
+                out = out.replace(pat, rep);
+            }
+            return out;
+        }
+
+        function _pn_canonical(token) {
+            token = (token || "").trim().toUpperCase();
+            if (['I', 'L', '|', '!', 'Í'].includes(token)) return '1';
+            if (['Z'].includes(token)) return '2';
+            return ['1', '2', '3', '4', '5', '6'].includes(token) ? token : null;
+        }
+
+        // --- Comercializadora & CUPS ---
+        const SUPPLIERS = [
+            [/\bgesternova\b/, "Gesternova"],
+            [/\bendesa\b/, "Endesa"],
+            [/\biber[d|d]rola\b|\bcurenergia\b/, "Iberdrola"],
+            [/\bnaturgy\b|\bgas\s*natural\b/, "Naturgy"],
+            [/\btotal\s*energies\b/, "TotalEnergies"],
+            [/\brepsol\b/, "Repsol"],
+            [/\bholaluz\b/, "Holaluz"],
+            [/\bedp\b|\btotalenerx[íi]a\b/, "EDP"],
+            [/\bchc\s*energ[ií]a\b/, "CHC Energía"],
+            [/\bacciona\b/, "Acciona"],
+            [/\bbaser\b/, "Baser"],
+            [/\baudax\b/, "Audax"],
+            [/\bbon\s*preu\b|\besclat\b/, "Bonpreu/Esclat"],
+            [/\bpepeenergy\b|\bpepephone\b/, "Pepeenergy"],
+        ];
+
+        function detect_supplier(text) {
+            const t = stripAccents(text);
+            for (const [pat, name] of SUPPLIERS) {
+                if (pat.test(t)) {
+                    return name;
+                }
+            }
+            return null;
+        }
+
+        function detect_cups(text) {
+            let match;
+            const cupsRegex = /cups\s*[:\-]?\s*([A-Za-z0-9\-\s]{16,32})/gi;
+            while ((match = cupsRegex.exec(text)) !== null) {
+                const cand = match[1].replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+                if (cand.startsWith('ES') && cand.length >= 18 && cand.length <= 24) {
+                    return cand;
+                }
+            }
+            
+            const t_up = text.toUpperCase();
+            match = t_up.match(/\bES[0-9A-Z]{16,22}\b/);
+            if (match) return match[0];
+
+            const t_clean = t_up.replace(/[\s\-]/g, '');
+            match = t_clean.match(/ES[0-9A-Z]{16,22}/);
+            if (match) return match[0];
+
+            return null;
+        }
+
+        // --- Extracción P1..P6 ---
+        function extract_p1_p6(text) {
+            text = _fix_ocr_confusions(text);
+            const lines = text.split('\n').map(ln => ln.trim()).filter(ln => ln);
+            let results = {};
+
+            const is_banned_line = (ln) => /lectur/i.test(ln) && !/consum/i.test(ln);
+            const num_pat = /\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+,\d+/g;
+
+            // A) Ancla "consumos desagregados"
+            const syn_map = {"punta":"P1", "llano":"P2", "pla":"P2", "valle":"P3", "vall":"P3"};
+            const pat_syn = /\b(punta|llano|valle|pla|vall)\b\s*[:=\-]?\s*(\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+(?:,\d+)?)\s*kwh\b/gi;
+            const m_anchor = text.match(/consum\w*\s+desagregad\w*/i);
+            if (m_anchor) {
+                const tail = text.substring(m_anchor.index, m_anchor.index + 800);
+                let match;
+                while ((match = pat_syn.exec(tail)) !== null) {
+                    const p = syn_map[match[1].toLowerCase()];
+                    if (p && !results[p]) {
+                        const v = normnum(match[2]);
+                        if (v !== null) results[p] = v;
+                    }
+                }
+            }
+            
+            // B) Resumen/Línea con etiquetas
+            const pat_res_line = /(?:consum[o]?|consumo|consum|per[ií]odo|periode)\s*P\s*([1-6])\s*[:=\-]?\s*(\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+(?:,\d+)?)\s*kwh\b(?!\s*real)/gi;
+            for (const ln of lines) {
+                if (is_banned_line(ln)) continue;
+                let match;
+                while((match = pat_res_line.exec(ln)) !== null) {
+                    const p = `P${match[1]}`;
+                    if (p in results) continue;
+                    const v = normnum(match[2]);
+                    if (v !== null) results[p] = v;
+                }
+            }
+
+            const pat_res_span = /(?:consum[o]?|consumo|consum|per[ií]odo|periode)\s*P\s*([1-6]).{0,180}?(\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+(?:,\d+)?)\s*kwh\b(?!\s*real)/gis;
+            let matchResSpan;
+            while((matchResSpan = pat_res_span.exec(text)) !== null) {
+                const p = `P${matchResSpan[1]}`;
+                if (p in results) continue;
+                const v = normnum(matchResSpan[2]);
+                if (v !== null) results[p] = v;
+            }
+
+            // D) 'Término Energía Pn'
+            const pat_term = /t[ée]rmino\s+energ[ií]a\s+p\s*([1-6]).{0,120}?(\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+(?:,\d+)?)\s*kwh\b/gis;
+            let matchTerm;
+            while ((matchTerm = pat_term.exec(text)) !== null) {
+                const p = `P${matchTerm[1]}`;
+                if (p in results) continue;
+                const v = normnum(matchTerm[2]);
+                if (v !== null) results[p] = v;
+            }
+            
+            // E) 'Consumo electricidad Pn'
+            const pat_elec_line = /(?:consum[o]?|consumo)\s+(?:de\s+)?(?:electricidad|electricitat)\s+p\s*([1-6]).*?(\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+(?:,\d+)?)\s*kwh\b/gi;
+             for (const ln of lines) {
+                if (is_banned_line(ln)) continue;
+                const m = ln.match(pat_elec_line);
+                if (m) {
+                    const p = `P${m[1]}`;
+                    if (!(p in results)) {
+                        const v = normnum(m[2]);
+                        if (v !== null) results[p] = v;
+                    }
+                }
+            }
+
+
+            // F) GENÉRICO tolerante: 'P? … kWh' (línea y span)
+            const pat_pn_line_tol = /^\s*P\s*([1Il\|!Z23456])\s*[:.\-]?\s*[^\n\r]{0,120}?(\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+(?:,\d+)?)\s*kwh\b(?!\s*real)/gim;
+            let matchLine;
+            while ((matchLine = pat_pn_line_tol.exec(text)) !== null) {
+                const pn = _pn_canonical(matchLine[1]);
+                if (pn) {
+                    const p = `P${pn}`;
+                    if (!(p in results)) {
+                        const v = normnum(matchLine[2]);
+                        if (v !== null) results[p] = v;
+                    }
+                }
+            }
+
+            const pat_pn_span_tol = /P\s*([1Il\|!Z23456]).{0,160}?(\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+(?:,\d+)?)\s*kwh\b(?!\s*real)/gis;
+            let matchSpan;
+            while ((matchSpan = pat_pn_span_tol.exec(text)) !== null) {
+                const pn = _pn_canonical(matchSpan[1]);
+                if (!pn) continue;
+                const p = `P${pn}`;
+                if (p in results) continue;
+                const v = normnum(matchSpan[2]);
+                if (v !== null) results[p] = v;
+            }
+
+            // ANCLA específica (Endesa/Naturgy): "Costes Energía no Prefijada"
+            const anchor_costes = stripAccents(text).match(/cost(e|es)\s+energ[ií]a\s+no\s+prefijad/i);
+            if (anchor_costes) {
+                const start = Math.max(0, anchor_costes.index - 200);
+                const tail = text.substring(start, start + 1400);
+                let matchCostes;
+                while ((matchCostes = pat_pn_span_tol.exec(tail)) !== null) {
+                    const pn = _pn_canonical(matchCostes[1]);
+                    if (!pn) continue;
+                    const p = `P${pn}`;
+                    if (p in results) continue;
+                    const v = normnum(matchCostes[2]);
+                    if (v !== null) results[p] = v;
+                }
+            }
+            
+            // G) Fila tipo tabla: 'Energía Activa consumida'
+            for (const ln of lines) {
+                if (/energ[ií]a\s+activa.*consumid/i.test(ln)) {
+                    const nums = [...ln.matchAll(num_pat)].map(m => normnum(m[0])).filter(n => n !== null);
+                    if (nums.length >= 1) {
+                        nums.slice(0, 6).forEach((n, idx) => {
+                            const p = `P${idx + 1}`;
+                            if (!(p in results)) results[p] = n;
+                        });
+                    }
+                    break;
+                }
+            }
+
+            // H) Lecturas: 'Activa Pn'
+            for (const ln of lines) {
+                if (!(/\bactiva\b/i.test(ln) && /\bP\s*[1-6]\b/i.test(ln) && /kwh/i.test(ln))) continue;
+                const m_p = ln.match(/P\s*([1-6])/i);
+                if (!m_p) continue;
+                const p = `P${m_p[1]}`;
+                if (p in results) continue;
+                const kwh_nums = [...ln.matchAll(/(\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+(?:,\d+)?)\s*kwh/gi)];
+                if (kwh_nums.length > 0) {
+                    const v = normnum(kwh_nums[kwh_nums.length - 1][1]);
+                    if (v !== null) results[p] = v;
+                }
+            }
+
+            const order = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'];
+            return order.filter(p => p in results).map(p => [p, results[p]]);
+        }
+        
+        // --- Fechas ---
+        const _DATE_NUM_SRC = '(\\d{1,2})[\\/\\.\\-](\\d{1,2})[\\/\\.\\-](\\d{2,4})';
+        const _DATE_NUM_REGEX = new RegExp(_DATE_NUM_SRC, 'g');
+        const MONTHS = {
+            "enero":"01","febrero":"02","marzo":"03","abril":"04","mayo":"05","junio":"06","julio":"07","agosto":"08",
+            "septiembre":"09","setiembre":"09","octubre":"10","noviembre":"11","diciembre":"12",
+            "gener":"01","febrer":"02","marc":"03","març":"03","abril":"04","maig":"05","juny":"06","juliol":"07","agost":"08",
+            "setembre":"09","octubre":"10","novembre":"11","desembre":"12",
+        };
+
+        function _fmt_date(d, m, y) {
+            y = String(y).padStart(2, '0');
+            if (y.length === 2) y = "20" + y;
+            return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        }
+
+        function _parse_textual_date(tup) {
+            const [d, month_name, y] = tup;
+            const key = stripAccents(month_name).trim();
+            return MONTHS[key] ? _fmt_date(d, MONTHS[key], y) : null;
+        }
+
+        function extract_period_dates(text) {
+            const _unify_dashes = (s) => s.replace(/[\u2010-\u2014\u2212]/g, "-");
+            const t_raw = _unify_dashes(text);
+            const t_norm = _unify_dashes(stripAccents(text));
+
+            // 1) ANCLA: "Periodo de facturación"
+            let m = t_norm.match(new RegExp(`periodo\\s+de\\s+facturacion[^0-9]{0,30}${_DATE_NUM_SRC}\\s*-\\s*${_DATE_NUM_SRC}`, 'i'));
+            if (m) return [_fmt_date(m[1], m[2], m[3]), _fmt_date(m[4], m[5], m[6])];
+
+            // 1b) Misma ancla pero con cualquier conector
+            m = t_norm.match(new RegExp(`periodo\\s+de\\s+facturacion.{0,120}?${_DATE_NUM_SRC}\\s*(?:-|a|al|hasta)\\s*${_DATE_NUM_SRC}`, 'is'));
+            if (m) return [_fmt_date(m[1], m[2], m[3]), _fmt_date(m[4], m[5], m[6])];
+
+            // 2) "del ... al ..." o "desde ... hasta ..."
+            const patterns = [
+                new RegExp(`(?:del|desde)\\s+${_DATE_NUM_SRC}\\s+(?:a|al|hasta)\\s+${_DATE_NUM_SRC}`, 'i'),
+                new RegExp(`entre\\s+${_DATE_NUM_SRC}\\s+y\\s+${_DATE_NUM_SRC}`, 'i'),
+            ];
+            for (const pat of patterns) {
+                m = t_norm.match(pat);
+                if (m) return [_fmt_date(m[1], m[2], m[3]), _fmt_date(m[4], m[5], m[6])];
+            }
+            
+            // 3) Dos fechas en la MISMA LÍNEA
+            for (const ln of t_raw.split('\n')) {
+                const ln_n = stripAccents(ln);
+                const ds = [...ln_n.matchAll(_DATE_NUM_REGEX)];
+                if (ds.length >= 2) {
+                    const a = ds[0];
+                    const b = ds[1];
+                    return [_fmt_date(a[1], a[2], a[3]), _fmt_date(b[1], b[2], b[3])];
+                }
+            }
+
+            // 4) Fallback textual con meses
+            const pat_text = /(?:de|del|entre)\s+(\d{1,2})\s+de\s+([a-zà-ÿ]+)\s+de\s+(\d{2,4})\s+(?:a|al|y|hasta)\s+(\d{1,2})\s+de\s+([a-zà-ÿ]+)\s+de\s+(\d{2,4})/;
+            m = t_norm.match(pat_text);
+            if (m) {
+                const f1 = _parse_textual_date([m[1], m[2], m[3]]);
+                const f2 = _parse_textual_date([m[4], m[5], m[6]]);
+                if (f1 && f2) return [f1, f2];
+            }
+
+            // 5) Último recurso: primeras 2 fechas cercanas
+            const all_ds = [...t_norm.matchAll(_DATE_NUM_REGEX)];
+            for (let i = 0; i < all_ds.length - 1; i++) {
+                const a = all_ds[i];
+                const b = all_ds[i + 1];
+                if ((b.index - (a.index + a[0].length)) <= 80) {
+                     return [_fmt_date(a[1], a[2], a[3]), _fmt_date(b[1], b[2], b[3])];
+                }
+            }
+
+            return [null, null];
+        }
+
+        // --- PIPELINE DE PROCESAMIENTO ---
+        async function processFiles() {
+            if (uploadedFiles.length === 0) {
+                showMessage('info', 'Por favor, sube uno o más archivos PDF para empezar.');
+                return;
+            }
+
+            // Reset UI
+            processBtn.disabled = true;
+            progressContainer.classList.remove('hidden');
+            resultsContainer.classList.add('hidden');
+            messageBox.innerHTML = '';
+            detailTableBody.innerHTML = '';
+            summaryTableBody.innerHTML = '';
+            missingTableBody.innerHTML = '';
+            detailData = [];
+            summaryData = [];
+
+            const filesData = await Promise.all(uploadedFiles.map(file => {
+                return new Promise(resolve => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve({ name: file.name, data: new Uint8Array(e.target.result) });
+                    reader.readAsArrayBuffer(file);
+                });
+            }));
+
+            let totalPages = 0;
+            const pagesTotal = {};
+            const skipped = [];
+            
+            for(const file of filesData) {
+                try {
+                    const doc = await pdfjsLib.getDocument(file.data.slice()).promise;
+                    pagesTotal[file.name] = doc.numPages;
+                    totalPages += doc.numPages;
+                } catch (err) {
+                    skipped.push(`${file.name} (no es un PDF válido: ${err.message})`);
+                }
+            }
+            
+            if (skipped.length > 0) {
+                showMessage('warning', `Se omitieron archivos: ${skipped.join('; ')}`);
+            }
+
+            let donePages = 0;
+            let allRows = [];
+            const tesseractWorker = await Tesseract.createWorker();
+            
+            const langs = document.getElementById('langs').value;
+            const psm = document.getElementById('psm').value;
+            await tesseractWorker.loadLanguage(langs);
+            await tesseractWorker.initialize(langs);
+            await tesseractWorker.setParameters({
+                tessedit_pageseg_mode: psm,
+            });
+
+            for (const file of filesData) {
+                if (!pagesTotal[file.name]) continue;
+                
+                const doc = await pdfjsLib.getDocument(file.data).promise;
+                let supplier_doc = null;
+                let cups_doc = null;
+
+                for (let i = 1; i <= doc.numPages; i++) {
+                    const pct = Math.round((donePages / Math.max(totalPages, 1)) * 100);
+                    progressText.textContent = `Procesando: ${file.name} (página ${i}/${doc.numPages}) — ${pct}%`;
+                    progressBar.style.width = `${pct}%`;
+
+                    const page = await doc.getPage(i);
+                    const textContent = await page.getTextContent();
+                    const rawText = textContent.items.map(item => item.str).join(' ');
+
+                    // OCR
+                    const dpi = parseInt(document.getElementById('dpi').value, 10);
+                    const viewport = page.getViewport({ scale: dpi / 72 });
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    await page.render({ canvasContext: context, viewport: viewport }).promise;
+                    
+                    const ocrResult = await tesseractWorker.recognize(canvas);
+                    const ocrText = ocrResult.data.text;
+                    const fullText = rawText + "\n" + ocrText;
+                    
+                    if (supplier_doc === null) supplier_doc = detect_supplier(fullText);
+                    if (cups_doc === null) cups_doc = detect_cups(fullText);
+
+                    const [f_ini, f_fin] = extract_period_dates(fullText);
+                    const consumos = extract_p1_p6(fullText);
+                    const supplier_page = detect_supplier(fullText) || supplier_doc;
+                    const cups_page = detect_cups(fullText) || cups_doc;
+
+                    for (const [periodo, valor] of consumos) {
+                        allRows.push({
+                            archivo: file.name,
+                            pagina: i,
+                            periodo: periodo,
+                            consumo_kwh: valor,
+                            fecha_inicio: f_ini,
+                            fecha_fin: f_fin,
+                            comercializadora: supplier_page,
+                            cups: cups_page,
+                            fuente: `ocr(psm=${psm})`
+                        });
+                    }
+                    donePages++;
+                }
+            }
+
+            await tesseractWorker.terminate();
+            processBtn.disabled = false;
+            progressText.textContent = 'Proceso completado.';
+
+            // --- PROCESAMIENTO FINAL Y VISUALIZACIÓN ---
+            if (allRows.length === 0) {
+                showMessage('warning', "No se encontraron P1..P6 en los PDF subidos. Prueba a cambiar los parámetros de OCR (DPI, PSM).");
+                return;
+            }
+
+            // Deduplicación
+            let uniqueRows = [];
+            const seen = new Set();
+            for (const row of allRows) {
+                const key = `${row.archivo}-${row.pagina}-${row.periodo}-${row.consumo_kwh}`;
+                if (!seen.has(key)) {
+                    uniqueRows.push(row);
+                    seen.add(key);
+                }
+            }
+            detailData = uniqueRows.sort((a, b) => a.archivo.localeCompare(b.archivo) || a.pagina - b.pagina);
+
+            if (document.getElementById('dedup-doc').checked) {
+                const deduped = [];
+                const seenDoc = new Set();
+                detailData.sort((a,b) => a.archivo.localeCompare(b.archivo) || a.periodo.localeCompare(b.periodo) || a.consumo_kwh - b.consumo_kwh || a.pagina - b.pagina);
+                for (const row of detailData) {
+                    const key = `${row.archivo}-${row.periodo}-${row.consumo_kwh}`;
+                    if (!seenDoc.has(key)) {
+                        deduped.push(row);
+                        seenDoc.add(key);
+                    }
+                }
+                detailData = deduped.sort((a, b) => a.archivo.localeCompare(b.archivo) || a.pagina - b.pagina || a.periodo.localeCompare(b.periodo));
+            }
+
+            // Crear datos de resumen
+            const resumenMap = new Map();
+            for (const row of detailData) {
+                const key = `${row.archivo}-${row.pagina}`;
+                if (!resumenMap.has(key)) {
+                    resumenMap.set(key, {
+                        archivo: row.archivo,
+                        pagina: row.pagina,
+                        comercializadora: row.comercializadora,
+                        cups: row.cups,
+                        fecha_inicio: row.fecha_inicio,
+                        fecha_fin: row.fecha_fin,
+                        P1: null, P2: null, P3: null, P4: null, P5: null, P6: null,
+                    });
+                }
+                const summaryRow = resumenMap.get(key);
+                summaryRow[row.periodo] = row.consumo_kwh;
+            }
+            summaryData = Array.from(resumenMap.values()).sort((a, b) => a.archivo.localeCompare(b.archivo) || a.pagina - b.pagina);
+
+            // Páginas faltantes
+            const missingRows = [];
+            for (const fname in pagesTotal) {
+                const detectedPages = new Set(detailData.filter(r => r.archivo === fname).map(r => r.pagina));
+                for (let pg = 1; pg <= pagesTotal[fname]; pg++) {
+                    if (!detectedPages.has(pg)) {
+                        missingRows.push({ archivo: fname, pagina: pg });
+                    }
+                }
+            }
+
+            // Renderizar todo
+            showMessage('success', `✅ Encontrados ${detailData.length} consumos P1–P6 en ${Object.keys(pagesTotal).length} archivo(s).`);
+            renderTables(detailData, summaryData, missingRows);
+            setupDownloadButtons();
+            resultsContainer.classList.remove('hidden');
+        }
+
+        function renderTables(details, summaries, missings) {
+            // Detalle
+            if (details.length > 0) {
+                detailTableBody.innerHTML = details.map(row => `
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800">${row.archivo || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.pagina || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.periodo || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.consumo_kwh !== null ? row.consumo_kwh.toFixed(3) : ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.fecha_inicio || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.fecha_fin || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.comercializadora || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.cups || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.fuente || ''}</td>
+                    </tr>
+                `).join('');
+                detailSection.classList.remove('hidden');
+            }
+
+            // Resumen
+            if (summaries.length > 0) {
+                summaryTableBody.innerHTML = summaries.map(row => `
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800">${row.archivo || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.pagina || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.comercializadora || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.cups || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.fecha_inicio || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.fecha_fin || ''}</td>
+                        ${['P1','P2','P3','P4','P5','P6'].map(p => `<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row[p] !== null ? row[p].toFixed(3) : ''}</td>`).join('')}
+                    </tr>
+                `).join('');
+                summarySection.classList.remove('hidden');
+            }
+            
+            // Faltantes
+            if (missings.length > 0) {
+                missingTableBody.innerHTML = missings.map(row => `
+                     <tr class="hover:bg-gray-50">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-800">${row.archivo || ''}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${row.pagina || ''}</td>
+                    </tr>
+                `).join('');
+                missingSection.classList.remove('hidden');
+            }
+
+
+            downloadButtons.classList.remove('hidden');
+        }
+
+        function showMessage(type, message) {
+            const colors = {
+                success: 'bg-green-100 border-green-400 text-green-700',
+                warning: 'bg-yellow-100 border-yellow-400 text-yellow-700',
+                info: 'bg-blue-100 border-blue-400 text-blue-700',
+            };
+            messageBox.innerHTML = `<div class="border-l-4 p-4 rounded-md ${colors[type]}" role="alert"><p>${message}</p></div>`;
+        }
+        
+        // --- DESCARGAS ---
+        function setupDownloadButtons() {
+            const stamp = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, '');
+            
+            downloadExcelBtn.onclick = () => {
+                const wb = XLSX.utils.book_new();
+                const wsDetail = XLSX.utils.json_to_sheet(detailData);
+                const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+                XLSX.utils.book_append_sheet(wb, wsDetail, "detalle");
+                XLSX.utils.book_append_sheet(wb, wsSummary, "resumen");
+                XLSX.writeFile(wb, `WattsOn_${stamp}.xlsx`);
+            };
+
+            downloadCsvDetailBtn.onclick = () => {
+                const csv = Papa.unparse(detailData);
+                downloadBlob(csv, `WattsOn_detalle_${stamp}.csv`, 'text/csv;charset=utf-8;');
+            };
+
+            downloadCsvSummaryBtn.onclick = () => {
+                const csv = Papa.unparse(summaryData);
+                downloadBlob(csv, `WattsOn_resumen_${stamp}.csv`, 'text/csv;charset=utf-8;');
+            };
+        }
+
+        function downloadBlob(content, fileName, contentType) {
+            const blob = new Blob([content], { type: contentType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+    </script>
+</body>
+</html>
